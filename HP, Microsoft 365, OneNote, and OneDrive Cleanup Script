@@ -1,0 +1,141 @@
+# ==========================
+# HP, Microsoft 365, OneNote, and OneDrive Cleanup Script
+# ==========================
+
+# --------------------------
+# HP GUIDs to uninstall via msiexec
+# --------------------------
+$HPGuids = @(
+    "{19F557DE-662A-4FEA-B635-1CACD56CC483}"  # HP Notifications
+)
+
+$ConnectionOptimizerSetup = "C:\Program Files (x86)\InstallShield Installation Information\{6468C4A5-E47E-405F-B675-A70A70983EA6}\setup.exe"
+
+# --------------------------
+# Function: Uninstall MSI package by GUID
+# --------------------------
+function Uninstall-MSI {
+    param(
+        [string]$Guid
+    )
+    Write-Host "Uninstalling MSI package with GUID: $Guid"
+    Start-Process -FilePath "msiexec.exe" -ArgumentList "/x$Guid /qn /norestart" -Wait
+}
+
+# --------------------------
+# Function: Uninstall EXE silently
+# --------------------------
+function Uninstall-EXE {
+    param(
+        [string]$UninstallString
+    )
+    $parts = $UninstallString -split ' ', 2
+    $exePath = $parts[0].Trim('"')
+    $args = if ($parts.Length -gt 1) { $parts[1] + " /quiet /norestart" } else { "/quiet /norestart" }
+
+    Write-Host "Uninstalling EXE: $exePath"
+    Start-Process -FilePath $exePath -ArgumentList $args -Wait
+}
+
+# --------------------------
+# Function: Uninstall HP Programs
+# --------------------------
+function Uninstall-HPPrograms {
+    $allEntries = @()
+    $allEntries += Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue
+    $allEntries += Get-ItemProperty HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue
+
+    # Filter standard HP programs (exclude HP Notifications and Connection Optimizer)
+    $hpEntries = $allEntries | Where-Object {
+        $_.DisplayName -like "HP *" -and
+        $_.DisplayName -notin @("HP Notifications", "HP Connection Optimizer")
+    }
+
+    foreach ($entry in $hpEntries) {
+        $uninstallString = $entry.UninstallString
+        if (![string]::IsNullOrEmpty($uninstallString)) {
+            try {
+                if ($uninstallString -match 'msiexec') {
+                    if ($uninstallString -match '/X\{([^\}]+)\}') {
+                        $guid = "{" + $matches[1] + "}"
+                        if ($HPGuids -contains $guid) {
+                            Write-Host "Skipped $($entry.DisplayName) (handled separately)"
+                            continue
+                        }
+                        Uninstall-MSI $guid
+                    } else {
+                        Write-Host "Cannot extract GUID from: $uninstallString"
+                    }
+                } else {
+                    Uninstall-EXE $uninstallString
+                }
+            } catch {
+                Write-Host "Error uninstalling $($entry.DisplayName)"
+            }
+        }
+    }
+
+    # Uninstall exceptions separately
+    foreach ($guid in $HPGuids) { Uninstall-MSI $guid }
+
+    # Uninstall HP Connection Optimizer via setup.exe
+    if (Test-Path $ConnectionOptimizerSetup) {
+        Write-Host "Uninstalling HP Connection Optimizer via setup.exe /uninstall"
+        Start-Process -FilePath $ConnectionOptimizerSetup -ArgumentList "/uninstall" -Wait
+    } else {
+        Write-Host "HP Connection Optimizer setup.exe not found at $ConnectionOptimizerSetup"
+    }
+}
+
+# --------------------------
+# Function: Uninstall Microsoft 365 and OneNote
+# --------------------------
+function Uninstall-Office {
+    $officeEntries = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* |
+        Where-Object { $_.DisplayName -like "Microsoft 365*" -or $_.DisplayName -like "Microsoft OneNote*" }
+
+    foreach ($entry in $officeEntries) {
+        $uninstallString = $entry.UninstallString
+        if (![string]::IsNullOrEmpty($uninstallString)) {
+            try {
+                $exe = ($uninstallString -split '"')[1]
+                $args = ($uninstallString -split '"')[2] + " DisplayLevel=False"
+                Write-Host "Uninstalling: $($entry.DisplayName)"
+                Start-Process -FilePath $exe -ArgumentList $args -Wait
+            } catch {
+                Write-Host "Error uninstalling $($entry.DisplayName)"
+            }
+        }
+    }
+
+    # Remove OneNote UWP (Microsoft Store) apps
+    $oneNoteApps = Get-AppxPackage *OneNote*
+    foreach ($app in $oneNoteApps) {
+        Write-Host "Removing OneNote UWP: $($app.Name)"
+        Remove-AppxPackage $app.PackageFullName
+    }
+}
+
+# --------------------------
+# Function: Uninstall OneDrive
+# --------------------------
+function Uninstall-OneDrive {
+    Write-Host "Uninstalling OneDrive..."
+    Start-Process "$env:SystemRoot\System32\OneDriveSetup.exe" -ArgumentList "/uninstall" -NoNewWindow -Wait
+    Start-Process "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" -ArgumentList "/uninstall" -NoNewWindow -Wait
+
+    # Remove user OneDrive folder
+    Remove-Item "$env:UserProfile\OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Remove ProgramData OneDrive folder
+    Remove-Item "C:\ProgramData\Microsoft OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ==========================
+# Main Execution
+# ==========================
+Uninstall-HPPrograms
+Uninstall-Office
+Uninstall-OneDrive
+
+Write-Host "Cleanup completed."

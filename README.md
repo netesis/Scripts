@@ -1,2 +1,2 @@
 # Scripts
-List of script for automate booring stuff
+Collection of scripts to automate boring tasks
